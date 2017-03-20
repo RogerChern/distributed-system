@@ -30,7 +30,47 @@ func schedule(jobName string, mapFiles []string, nReduce int, phase jobPhase, re
 	// Remember that workers may fail, and that any given worker may finish
 	// multiple tasks.
 	//
-	// TODO TODO TODO TODO TODO TODO TODO TODO TODO TODO TODO TODO TODO
-	//
+	switch phase {
+	case mapPhase:
+		done := make(chan int, ntasks)
+		for i, mapFile := range mapFiles {
+			task := DoTaskArgs{
+				JobName:jobName,
+				File:mapFile,
+				Phase:phase,
+				TaskNumber:i,
+				NumOtherPhase:n_other,
+			}
+			worker := <- registerChan
+			go func () {
+				call(worker, "Worker.DoTask", task, nil)
+				done <- 1
+				registerChan <- worker
+			}()
+		}
+		for i := 0; i < ntasks; i++ {
+			<- done
+		}
+	case reducePhase:
+		done := make(chan int, ntasks)
+		for i := 0; i < ntasks; i++ {
+			task := DoTaskArgs{
+				JobName:jobName,
+				File:"",
+				Phase:phase,
+				TaskNumber:i,
+				NumOtherPhase:n_other,
+			}
+			worker := <- registerChan
+			go func () {
+				call(worker, "Worker.DoTask", task, nil)
+				done <- 1 // registerChan is not a buffered chan, so done goes first
+				registerChan <- worker
+			}()
+		}
+		for i := 0; i < ntasks; i++ {
+			<- done
+		}
+	}
 	fmt.Printf("Schedule: %v phase done\n", phase)
 }
