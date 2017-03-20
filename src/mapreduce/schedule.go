@@ -45,13 +45,6 @@ func schedule(jobName string, mapFiles []string, nReduce int, phase jobPhase, re
 			NumOtherPhase:n_other,
 		}
 		worker := <- registerChan
-		//go func () {
-		//	res := call(worker, "Worker.DoTask", task, nil)
-		//	if res {
-		//		wg.Done()
-		//		registerChan <- worker
-		//	}
-		//}()
 		go fire(worker, "Worker.DoTask", task, nil, &wg, registerChan)
 	}
 	wg.Wait()
