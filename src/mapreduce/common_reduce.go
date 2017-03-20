@@ -1,5 +1,12 @@
 package mapreduce
 
+import (
+	"encoding/json"
+	"os"
+	"sort"
+	"log"
+)
+
 // doReduce manages one reduce task: it reads the intermediate
 // key/value pairs (produced by the map phase) for this task, sorts the
 // intermediate key/value pairs by key, calls the user-defined reduce function
@@ -43,4 +50,46 @@ func doReduce(
 	// }
 	// file.Close()
 	//
+	outFileHandler, err := os.Create(outFile)
+	if err != nil {
+		log.Fatal("os.Create: can not create ", err)
+	}
+	enc := json.NewEncoder(outFileHandler)
+	defer outFileHandler.Close()
+	for i := 0; i < nMap; i++ {
+		inFileName := reduceName(jobName, i, reduceTaskNumber)
+		inFileHandler, err := os.OpenFile(inFileName, os.O_RDONLY, 0400)
+		if err != nil {
+			log.Fatal("os.OpenFile: ", err)
+		}
+		dec := json.NewDecoder(inFileHandler)
+		var kvPairs []KeyValue
+		kv := KeyValue{}
+		for {
+			err := dec.Decode(&kv)
+			if err != nil {
+				break
+			} else {
+				kvPairs = append(kvPairs, kv)
+			}
+		}
+		sort.Sort(ByKey(kvPairs))
+		stop := 0
+		for stop != len(kvPairs) {
+			start := stop
+			stop = start + 1
+			var values []string
+			for ; stop != len(kvPairs) && kvPairs[stop].Key == kvPairs[stop - 1].Key; stop++ {
+				values = append(values, kvPairs[stop - 1].Value)
+			}
+			res := reduceF(kvPairs[start].Key, values)
+			enc.Encode(KeyValue{kvPairs[start].Key, res})
+		}
+		inFileHandler.Close()
+	}
 }
+
+type ByKey []KeyValue
+func (b ByKey) Len() int { return len(b) }
+func (b ByKey) Swap(i, j int) { b[i], b[j] = b[j], b[i] }
+func (b ByKey) Less(i, j int) bool { return b[i].Key < b[j].Key }
