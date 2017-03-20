@@ -33,45 +33,25 @@ func schedule(jobName string, mapFiles []string, nReduce int, phase jobPhase, re
 	// Remember that workers may fail, and that any given worker may finish
 	// multiple tasks.
 	//
-	switch phase {
-	case mapPhase:
-		var wg sync.WaitGroup
-		wg.Add(ntasks)
-		for i, mapFile := range mapFiles {
-			task := DoTaskArgs{
-				JobName:jobName,
-				File:mapFile,
-				Phase:phase,
-				TaskNumber:i,
-				NumOtherPhase:n_other,
-			}
-			worker := <- registerChan
-			go func () {
-				call(worker, "Worker.DoTask", task, nil)
-				wg.Done()
-				registerChan <- worker
-			}()
+
+	var wg sync.WaitGroup
+	wg.Add(ntasks)
+	for i := 0; i < ntasks; i++ {
+		task := DoTaskArgs{
+			JobName:jobName,
+			File:mapFiles[i],
+			Phase:phase,
+			TaskNumber:i,
+			NumOtherPhase:n_other,
 		}
-		wg.Wait()
-	case reducePhase:
-		var wg sync.WaitGroup
-		wg.Add(ntasks)
-		for i := 0; i < ntasks; i++ {
-			task := DoTaskArgs{
-				JobName:jobName,
-				File:"",
-				Phase:phase,
-				TaskNumber:i,
-				NumOtherPhase:n_other,
-			}
-			worker := <- registerChan
-			go func () {
-				call(worker, "Worker.DoTask", task, nil)
-				wg.Done() // registerChan is not a buffered chan, so done goes first
-				registerChan <- worker
-			}()
-		}
-		wg.Wait()
+		worker := <- registerChan
+		go func () {
+			call(worker, "Worker.DoTask", task, nil)
+			wg.Done()
+			registerChan <- worker
+		}()
 	}
+	wg.Wait()
+
 	fmt.Printf("Schedule: %v phase done\n", phase)
 }
