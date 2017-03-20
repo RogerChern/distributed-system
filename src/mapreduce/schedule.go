@@ -1,6 +1,9 @@
 package mapreduce
 
-import "fmt"
+import (
+	"fmt"
+	"sync"
+)
 
 //
 // schedule() starts and waits for all tasks in the given phase (Map
@@ -32,7 +35,8 @@ func schedule(jobName string, mapFiles []string, nReduce int, phase jobPhase, re
 	//
 	switch phase {
 	case mapPhase:
-		done := make(chan int, ntasks)
+		var wg sync.WaitGroup
+		wg.Add(ntasks)
 		for i, mapFile := range mapFiles {
 			task := DoTaskArgs{
 				JobName:jobName,
@@ -44,15 +48,14 @@ func schedule(jobName string, mapFiles []string, nReduce int, phase jobPhase, re
 			worker := <- registerChan
 			go func () {
 				call(worker, "Worker.DoTask", task, nil)
-				done <- 1
+				wg.Done()
 				registerChan <- worker
 			}()
 		}
-		for i := 0; i < ntasks; i++ {
-			<- done
-		}
+		wg.Wait()
 	case reducePhase:
-		done := make(chan int, ntasks)
+		var wg sync.WaitGroup
+		wg.Add(ntasks)
 		for i := 0; i < ntasks; i++ {
 			task := DoTaskArgs{
 				JobName:jobName,
@@ -64,13 +67,11 @@ func schedule(jobName string, mapFiles []string, nReduce int, phase jobPhase, re
 			worker := <- registerChan
 			go func () {
 				call(worker, "Worker.DoTask", task, nil)
-				done <- 1 // registerChan is not a buffered chan, so done goes first
+				wg.Done() // registerChan is not a buffered chan, so done goes first
 				registerChan <- worker
 			}()
 		}
-		for i := 0; i < ntasks; i++ {
-			<- done
-		}
+		wg.Wait()
 	}
 	fmt.Printf("Schedule: %v phase done\n", phase)
 }
