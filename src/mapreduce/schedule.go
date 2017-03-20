@@ -45,13 +45,27 @@ func schedule(jobName string, mapFiles []string, nReduce int, phase jobPhase, re
 			NumOtherPhase:n_other,
 		}
 		worker := <- registerChan
-		go func () {
-			call(worker, "Worker.DoTask", task, nil)
-			wg.Done()
-			registerChan <- worker
-		}()
+		//go func () {
+		//	res := call(worker, "Worker.DoTask", task, nil)
+		//	if res {
+		//		wg.Done()
+		//		registerChan <- worker
+		//	}
+		//}()
+		go fire(worker, "Worker.DoTask", task, nil, &wg, registerChan)
 	}
 	wg.Wait()
+}
 
-	fmt.Printf("Schedule: %v phase done\n", phase)
+// sync.WaitGroup should always be passed around by pointer
+// chan does not require be passed by pointer
+func fire(worker string, rpcname string, args interface{}, reply interface{}, group *sync.WaitGroup, registerChan chan string) {
+	res := call(worker, rpcname, args, reply)
+	if res {
+		group.Done()
+		registerChan <- worker
+	} else {
+		worker := <- registerChan
+		fire(worker, rpcname, args, reply, group, registerChan)
+	}
 }
