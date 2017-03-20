@@ -56,6 +56,7 @@ func doReduce(
 	}
 	enc := json.NewEncoder(outFileHandler)
 	defer outFileHandler.Close()
+	var kvPairs []KeyValue
 	for i := 0; i < nMap; i++ {
 		inFileName := reduceName(jobName, i, reduceTaskNumber)
 		inFileHandler, err := os.OpenFile(inFileName, os.O_RDONLY, 0400)
@@ -63,7 +64,6 @@ func doReduce(
 			log.Fatal("os.OpenFile: ", err)
 		}
 		dec := json.NewDecoder(inFileHandler)
-		var kvPairs []KeyValue
 		kv := KeyValue{}
 		for {
 			err := dec.Decode(&kv)
@@ -73,19 +73,20 @@ func doReduce(
 				kvPairs = append(kvPairs, kv)
 			}
 		}
-		sort.Sort(ByKey(kvPairs))
-		stop := 0
-		for stop != len(kvPairs) {
-			start := stop
-			stop = start + 1
-			var values []string
-			for ; stop != len(kvPairs) && kvPairs[stop].Key == kvPairs[stop - 1].Key; stop++ {
-				values = append(values, kvPairs[stop - 1].Value)
-			}
-			res := reduceF(kvPairs[start].Key, values)
-			enc.Encode(KeyValue{kvPairs[start].Key, res})
-		}
 		inFileHandler.Close()
+	}
+	sort.Sort(ByKey(kvPairs))
+	stop := 0
+	for stop != len(kvPairs) {
+		start := stop
+		stop = start + 1
+		var values []string
+		for ; stop != len(kvPairs) && kvPairs[stop].Key == kvPairs[stop - 1].Key; stop++ {
+			values = append(values, kvPairs[stop - 1].Value)
+		}
+		values = append(values, kvPairs[stop - 1].Value)
+		res := reduceF(kvPairs[start].Key, values)
+		enc.Encode(KeyValue{kvPairs[start].Key, res})
 	}
 }
 
