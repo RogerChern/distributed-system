@@ -136,17 +136,18 @@ type AppendEntriesReply struct {
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	rf.debug("Enter AppendEntries")
+	if args.Term > rf.currentTerm {
+		rf.votedFor = -1
+		rf.isleader = false
+		rf.currentTerm = args.Term
+		rf.standDown <- 1
+	}
+
 	if term, pIdx, entries := args.Term, args.PrevLogIndex, args.Entries;
 		term < rf.currentTerm || rf.log[pIdx].Term != args.PrevLogTerm {
 		reply.Success = false
 	} else {
-		if term > rf.currentTerm {
-			rf.currentTerm = term
-			if rf.isleader {
-				rf.standDown <- 1
-			}
-		}
+		rf.debug1("AppendEntries, leaderId: %d", args.LeaderId)
 		rf.leaderHeartbeat <- 1
 		reply.Success = true
 		var i int
@@ -202,15 +203,27 @@ type RequestVoteReply struct {
 // example RequestVote RPC handler.
 //
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
+	rf.debug1("RequestVote from: %d", args.CandidateId)
+	rf.mu.Lock()
+	rf.debug("Aquired lock")
+	defer rf.mu.Unlock()
 	// Your code here (2A, 2B).
+	if args.Term > rf.currentTerm {
+		rf.debug("Update term")
+		rf.votedFor = -1
+		rf.isleader = false
+		rf.standDown <- 1
+		rf.debug("Standing down")
+	}
 	if args.Term >= rf.currentTerm &&
 		(rf.votedFor == -1 || rf.votedFor == args.CandidateId) &&
 		args.LastLogTerm >= rf.log[len(rf.log)-1].Term {
 		reply.VoteGranted = true
 		rf.votedFor = args.CandidateId
+		rf.debug1("Vote for: %d", rf.votedFor)
 		rf.currentTerm = args.Term
 	} else {
-		rf.debug1("Not granting vote, cand term: %d, my term: %d, I votedfor: %", args.Term, args.CandidateId, rf.votedFor)
+		rf.debug1("Refuse to vote, cand term: %d, cand id: %d, my term: %d, I votedfor: %d", args.Term, args.CandidateId, rf.currentTerm, rf.votedFor)
 		reply.VoteGranted = false
 	}
 	reply.Term = rf.currentTerm
@@ -302,7 +315,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.peers = peers
 	rf.persister = persister
 	rf.me = me
-	rf.debug("Entering Make")
+	rf.debug("Make")
 	// Your initialization code here (2A, 2B, 2C).
 	rf.currentTerm = 0
 	rf.votedFor = -1
@@ -328,66 +341,104 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 // loop forever
 func (rf *Raft) waitConvertToCandidate() {
-	rf.debug("Enter waitConvertToCandidate")
+	rf.debug("waitConvertToCandidate")
 	base := time.Millisecond * 150
 	for {
 		random := time.Millisecond * time.Duration(rand.Intn(150))
 		electionTimeout := base + random
 		//rf.debug1("Election timeout: %d", electionTimeout)
 		select {
+		case <- rf.standDown:
+			rf.mu.Lock()
+			rf.votedFor = -1
+			rf.mu.Unlock()
+			continue
 		case <- rf.leaderHeartbeat:
+			rf.mu.Lock()
+			rf.votedFor = -1
+			rf.mu.Unlock()
 			continue
 		case <- time.After(electionTimeout):
-			go rf.convertToCandidate()
+			rf.mu.Lock()
+			if !rf.isleader {
+				go rf.convertToCandidate()
+			}
+			rf.mu.Unlock()
 		}
 	}
 }
 
 func (rf *Raft) convertToCandidate() {
-	rf.debug("Enter convertToCandidate")
+	rf.mu.Lock()
+	rf.debug("convertToCandidate")
 	rf.currentTerm += 1
-	rf.debug1("Current term: %d", rf.currentTerm)
 	rf.votedFor = rf.me
+	rf.debug1("Current term: %d", rf.currentTerm)
+
+	args := RequestVoteArgs{
+		rf.currentTerm,
+		rf.me,
+		len(rf.log) - 1,
+		rf.log[len(rf.log) - 1].Term,
+	}
+	rf.mu.Unlock()
+	reply := RequestVoteReply{}
 	c := make(chan bool)
 	for i, _ := range rf.peers {
-		args := RequestVoteArgs{
-			rf.currentTerm,
-			rf.me,
-			len(rf.log) - 1,
-			rf.log[len(rf.log) - 1].Term,
-		}
-		reply := RequestVoteReply{}
-		go func() {
-			rf.sendRequestVote(i, &args, &reply)
-			if reply.Term > rf.currentTerm {
+		if i == rf.me { continue }
+		rf.debug1("Send request to: %d", i)
+		go func(i int, term int) {
+			ok := rf.sendRequestVote(i, &args, &reply)
+			if !ok { return }
+			if reply.Term > term {
+				rf.mu.Lock()
+				rf.currentTerm = reply.Term
+				rf.mu.Unlock()
 				rf.debug("Standing down")
 				rf.standDown <- 1
 				return
 			}
 			c <- reply.VoteGranted
-		}()
+		}(i, args.Term)
 	}
 	nResponse := 0
 	nVote := 0
 	for {
 		select {
 		case <- rf.standDown:
+			rf.debug("Standing down")
+			rf.mu.Lock()
+			rf.votedFor = -1
+			rf.isleader = false
+			rf.mu.Unlock()
 			return
 		case <- time.After(time.Millisecond * 300):
+			rf.debug("Election timeout")
+			rf.mu.Lock()
+			rf.votedFor = -1
+			rf.isleader = false
+			rf.mu.Unlock()
 			return
 		case voteGranted := <- c:
 			nResponse += 1
 			rf.debug1("Now we have %d response", nResponse)
 			if voteGranted {
 				nVote += 1
-				rf.debug1("Now we have %d votes", nVote)
+				rf.debug1("Now we have %d votes", nVote + 1)
 			}
-			if nVote > len(rf.peers) / 2 {
+			if nVote + 1 > len(rf.peers) / 2 {
+				rf.mu.Lock()
 				rf.isleader = true
+				rf.mu.Unlock()
+				rf.debug("Win the election")
 				go rf.convertToLeader()
 				return
 			}
-			if nResponse == len(rf.peers) {
+			if nResponse == len(rf.peers) - 1 {
+				rf.mu.Lock()
+				rf.votedFor = -1
+				rf.isleader = false
+				rf.mu.Unlock()
 				return
 			}
 		}
@@ -395,19 +446,22 @@ func (rf *Raft) convertToCandidate() {
 }
 
 func (rf *Raft) convertToLeader() {
-	go rf.sendHeartbeat()
+	go rf.sendHeartbeat(rf.currentTerm)
 }
 
-func (rf *Raft) sendHeartbeat() {
+func (rf *Raft) sendHeartbeat(term int) {
 	for {
 		select {
 		case <-rf.standDown:
+			rf.mu.Lock()
+			rf.votedFor = -1
 			rf.isleader = false
+			rf.mu.Unlock()
 			return
 		case <-time.After(time.Millisecond * 15):
 			rf.mu.Lock()
 			args := AppendEntriesArgs {
-				rf.currentTerm,
+				term,
 				rf.me,
 				len(rf.log) - 1,
 				rf.log[len(rf.log) - 1].Term,
@@ -417,7 +471,23 @@ func (rf *Raft) sendHeartbeat() {
 			rf.mu.Unlock()
 			reply := AppendEntriesReply{}
 			for i, _ := range rf.peers {
-				go rf.sendAppendEntries(i, &args, &reply)
+				if i == rf.me { continue }
+				go func(i int) {
+					ok := rf.sendAppendEntries(i, &args, &reply)
+					if !ok {
+						rf.debug1("Heartbeat RPC fails for %d", i)
+						rf.debug1("Leader term %d", term)
+						return
+					}
+					if reply.Term > term {
+						rf.mu.Lock()
+						rf.debug1("Update term to %d", reply.Term)
+						rf.currentTerm = reply.Term
+						rf.mu.Unlock()
+						rf.debug("Standing down")
+						rf.standDown <- 1
+					}
+				}(i)
 			}
 		}
 	}
@@ -428,5 +498,6 @@ func (rf *Raft) debug(format string) {
 }
 
 func (rf *Raft) debug1(format string, a... interface{}) {
-	DPrintf("PeerID %d: " + format, rf.me, a)
+	a = append([]interface{}{rf.me}, a...)
+	DPrintf("PeerID %d: " + format, a...)
 }
