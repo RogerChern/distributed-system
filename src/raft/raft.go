@@ -212,6 +212,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.debug("Update term")
 		rf.votedFor = -1
 		rf.isleader = false
+		rf.currentTerm = args.Term
 		rf.standDown <- 1
 		rf.debug("Standing down")
 	}
@@ -221,7 +222,6 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		reply.VoteGranted = true
 		rf.votedFor = args.CandidateId
 		rf.debug1("Vote for: %d", rf.votedFor)
-		rf.currentTerm = args.Term
 	} else {
 		rf.debug1("Refuse to vote, cand term: %d, cand id: %d, my term: %d, I votedfor: %d", args.Term, args.CandidateId, rf.currentTerm, rf.votedFor)
 		reply.VoteGranted = false
@@ -374,7 +374,6 @@ func (rf *Raft) convertToCandidate() {
 	rf.currentTerm += 1
 	rf.votedFor = rf.me
 	rf.debug1("Current term: %d", rf.currentTerm)
-
 	args := RequestVoteArgs{
 		rf.currentTerm,
 		rf.me,
@@ -382,12 +381,12 @@ func (rf *Raft) convertToCandidate() {
 		rf.log[len(rf.log) - 1].Term,
 	}
 	rf.mu.Unlock()
-	reply := RequestVoteReply{}
 	c := make(chan bool)
 	for i, _ := range rf.peers {
 		if i == rf.me { continue }
 		rf.debug1("Send request to: %d", i)
 		go func(i int, term int) {
+			reply := RequestVoteReply{}
 			ok := rf.sendRequestVote(i, &args, &reply)
 			if !ok { return }
 			if reply.Term > term {
@@ -469,9 +468,9 @@ func (rf *Raft) sendHeartbeat(term int) {
 				rf.commitIndex,
 			}
 			rf.mu.Unlock()
-			reply := AppendEntriesReply{}
 			for i, _ := range rf.peers {
 				if i == rf.me { continue }
+				reply := AppendEntriesReply{}
 				go func(i int) {
 					ok := rf.sendAppendEntries(i, &args, &reply)
 					if !ok {
